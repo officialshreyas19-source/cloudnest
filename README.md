@@ -1,2 +1,3 @@
 # cloudnest
-Secure, highly available student portal on AWS with Terraform and CI/CD.
+
+DevSecOps microservices platform on AWS (ECS Fargate, Terraform, GitHub Actions).
