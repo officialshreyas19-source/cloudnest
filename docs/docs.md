@@ -336,3 +336,44 @@ Save images in `docs/screenshots/` and link them here.
 - [ ] Save the new screenshots and push them
 
 **Next session:** load balancer for a stable address, then move the service to private subnets and close the open port.
+
+## 15. Concepts explained
+
+### AWS Fargate
+
+**What it is:** a way to run containers without managing servers. I give AWS the container image and the CPU and memory it needs, and AWS finds the capacity, starts the container and replaces it if it fails.
+
+**Fargate vs ECS on EC2**
+
+| | ECS on EC2 | ECS on Fargate |
+|---|---|---|
+| Servers | I create and manage them | AWS manages them |
+| Patching and capacity | My job | AWS's job |
+| Billing | Pay for the servers | Pay per task for the CPU and memory requested, while it runs |
+| Control | More | Less |
+| Good for | Large, steady workloads | Small and medium services, quick setup |
+
+**How it fits in CloudNest**
+- Cluster (`cloudnest-cluster`): logical home for the containers.
+- Task definition (`cloudnest-menu`): the recipe (image, 0.25 vCPU, 0.5 GB, port, logs).
+- Task: one running copy of the recipe.
+- Service (`cloudnest-menu-service`): keeps the desired number of tasks running.
+- In Terraform this is `launch_type = "FARGATE"`.
+
+**What happens on start:** ECS reads the task definition, Fargate provides an isolated environment, a network interface is attached in the subnet (the public IP), the image is pulled from ECR using the execution role, the container starts and logs go to CloudWatch.
+
+**Why Fargate for this project**
+- No servers to manage.
+- No cost for idle machines (desired count 0 stops billing for the task).
+- Fits microservices, one task definition per service.
+- Easy to automate with Terraform and a pipeline.
+
+**Trade-offs**
+- Costs more per unit of compute than well-packed EC2 at large, steady scale.
+- The underlying machine cannot be customised.
+- Each task needs its own network interface and address, so a public IP or NAT Gateway must be planned.
+- Startup takes about a minute (environment setup and image pull).
+
+**Alternatives:** Lambda (short event-driven functions), EKS (Kubernetes, fixed control-plane cost, more to learn), EC2 with Docker (most control, most work).
+
+**One line:** Fargate is serverless compute for containers: I define the container and its size, and AWS runs and replaces it.
