@@ -27,15 +27,15 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
 
 resource "aws_security_group" "menu" {
   name        = "cloudnest-menu-sg"
-  description = "Allow the menu service port"
+  description = "Allow the menu service port from the load balancer only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "Menu service (temporary test access)"
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "Menu service from the load balancer"
+    from_port       = 5000
+    to_port         = 5000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {
