@@ -162,7 +162,7 @@ Built with Terraform in `terraform/rds.tf`:
 Verified with the AWS CLI: status available, PubliclyAccessible false, MultiAZ false, StorageEncrypted true, master password secret active.
 
 - The database bills by the hour, so it is created for testing and removed afterwards (create about 6 minutes, delete about 4 minutes).
-- The password is managed by AWS in Secrets Manager. The application will read it at runtime using an IAM task role, which is still to be built.
+- The password is managed by AWS in Secrets Manager. ECS will inject it into the container as an environment variable at start, using the task execution role (permission still to be added).
 
 ### 6.8 Order service (built and tested locally, pushed to ECR, added 13-10-2026)
 
