@@ -149,6 +149,21 @@ Built with Terraform in `terraform/alb.tf`:
 - Verified: both targets showed healthy, and the menu was reachable through the load balancer address without a port number.
 - The load balancer bills by the hour, so it is removed after testing and rebuilt with terraform apply.
 
+### 6.7 Database, RDS PostgreSQL (done, added 13-10-2026)
+
+Built with Terraform in `terraform/rds.tf`:
+
+| Resource | Name | Purpose |
+|---|---|---|
+| Security group | cloudnest-db-sg | Allows PostgreSQL (5432) only from the menu service security group |
+| DB subnet group | cloudnest-db-subnets | Places the database in the two private subnets |
+| RDS instance | cloudnest-db | PostgreSQL 16, db.t4g.micro, 20 GB gp3, encrypted |
+
+Verified with the AWS CLI: status available, PubliclyAccessible false, MultiAZ false, StorageEncrypted true, master password secret active.
+
+- The database bills by the hour, so it is created for testing and removed afterwards (create about 6 minutes, delete about 4 minutes).
+- The password is managed by AWS in Secrets Manager. The application will read it at runtime using an IAM task role, which is still to be built.
+
 ## 7. How to run
 
 **Menu service locally**
@@ -218,6 +233,10 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 | Application Load Balancer across two Availability Zones | One stable address, and traffic keeps flowing if one zone fails. |
 | Health check on /health | Only healthy containers receive traffic, and failed ones are replaced. |
 | Service security group allows only the load balancer security group | Closes direct internet access to the containers. |
+| PostgreSQL on db.t4g.micro | Free plan eligible instance size and engine, small and cheap for the credits. |
+| Database in private subnets, not publicly accessible | Only the application can reach it, never the internet. |
+| AWS-managed master password in Secrets Manager | No password in code, Git or Terraform state files. |
+| Single zone database (no Multi-AZ) | Multi-AZ doubles the cost. Noted as a trade-off, and production would use Multi-AZ. |
 
 ## 9. Security measures
 
@@ -230,6 +249,8 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 - ECS uses a dedicated execution role with only the AWS-managed ECS task execution policy.
 - Port 5000 is closed to the internet. The service security group accepts traffic only from the load balancer security group (verified: a direct request to the task IP on port 5000 times out).
 - **Remaining temporary risk:** tasks still run in public subnets with public IPs (no NAT Gateway, for cost). To be moved to private subnets.
+- The database is not publicly accessible and sits in the private subnets. Its security group accepts PostgreSQL (port 5432) only from the menu service security group.
+- Database storage is encrypted. The master password is generated and stored by AWS in Secrets Manager (manage_master_user_password), so no password exists in code, Git or Terraform files.
 - IAM access to Billing was enabled by the root user (one-time setting) so the admin IAM user can view billing without using root.
 - Planned: least-privilege IAM roles, image scanning in the pipeline, encrypted database storage, CloudTrail logging.
 
@@ -242,7 +263,8 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 - Always on and free or very low cost: VPC, subnets, route tables, internet gateway, ECS cluster, security group, IAM role and one small ECR repository.
 - **Billed by the hour only while running:** the Fargate task and its public IPv4 address. Stopped with `menu_desired_count=0` after each test.
 - **Billed by the hour while it exists:** the load balancer. It is removed after each test with terraform destroy using -target.
-- Not used (to avoid cost): NAT Gateway, database.
+- **Billed by the hour while it exists:** the RDS database (about 6 minutes to create, about 4 to delete). It is removed after each session with a targeted destroy.
+- Not used (to avoid cost): NAT Gateway, Multi-AZ database.
 - Billing console shows USD 0.00 for October 2026 so far (data can lag about 24 hours, so the ECS status command is the reliable check that nothing is running).
 
 ## 11. Roadmap
@@ -255,7 +277,7 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 - [x] Container registry (ECR) with Terraform, image pushed and scanned
 - [x] Run the menu service on ECS Fargate (public subnet, temporary)
 - [x] Load balancer and health checks (ALB, target group, health check on /health)
-- [ ] Database (RDS) in private subnets
+- [x] Database (RDS PostgreSQL) in private subnets (created, verified private and encrypted, then removed to save credits)
 - [ ] Order and payment services
 - [ ] CI/CD pipeline with security scanning
 - [ ] Monitoring, alerts and dashboards
@@ -272,6 +294,7 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 | 10-10-2026 | Created the ECS cluster, CloudWatch log group, ECS execution role and security group with Terraform (5 resources). |
 | 11-10-2026 | Enabled IAM access to Billing. Created the task definition and ECS service with Terraform. Menu service ran on Fargate and returned the menu at the task's public IP. Learned that the IP changes on every start and that `[0, 0, 0]` means stopped on purpose. |
 | 12-10-2026 | Added an Application Load Balancer, target group and health check with Terraform. Restricted the service security group to the load balancer only. Fixed a missing ECR image (CannotPullContainerError) by pushing it again. Both targets became healthy. Removed the load balancer and service afterwards to stop billing. |
+| 13-10-2026 | Added a private PostgreSQL database on RDS with Terraform (encrypted, not public, AWS-managed password). Verified it was available and private, then removed it. Noticed that a full terraform apply also rebuilt the load balancer and service, and removed them again. |
 
 ## 13. Screenshots (add as evidence)
 
@@ -422,3 +445,27 @@ Save images in `docs/screenshots/` and link them here.
 **Checked after the session:** no load balancer and no running tasks, so nothing hourly-billed is left.
 
 **Next session:** database (RDS) in private subnets, then the order and payment services.
+
+### 13-10-2026: Private database on RDS
+
+**Goal:** add the data tier, kept private and secure, and confirm it works before removing it to save credits.
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Created `terraform/rds.tf` (security group, subnet group, instance) | Database as code, same as the rest |
+| 2 | Chose PostgreSQL on db.t4g.micro | Free plan eligible engine
+| 3 | Used an AWS-managed password | No password in code, Git or state |
+| 4 | Verified status, privacy and encryption with the CLI | Proof the database is available, private and encrypted |
+| 5 | Removed the database and checked the account was clean | Database bills by the hour |
+
+**Problem and lesson**
+
+1. **The plan said 6 to add, not 3.** The load balancer, listener and ECS service had been removed with a targeted destroy last time, so a full `terraform apply` rebuilt them together with the database. They were removed again afterwards with `terraform destroy "-target=aws_lb.main" "-target=aws_ecs_service.menu"`. Lesson: read the "Plan: N to add" line before typing yes, and use `-target` when only one piece is wanted.
+
+**Checked at the end:** no load balancer, no running tasks, no database and no leftover secret, so nothing hourly-billed is left.
+
+**Open items**
+- [ ] Identify the High finding from the ECR scan
+- [ ] Push any new screenshots
+
+**Next session:** order and payment services that use the database (IAM task role to read the secret), then the CI/CD pipeline.
