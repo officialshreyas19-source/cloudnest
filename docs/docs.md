@@ -230,6 +230,18 @@ terraform apply -var="menu_desired_count=0"       # stops the task (billing stop
 ```
 
 **Order service locally (with a throwaway PostgreSQL)**
+
+```
+docker network create cloudnest-net
+docker run -d --name pg --network cloudnest-net -e POSTGRES_DB=cloudnest -e POSTGRES_USER=cloudnest_admin -e POSTGRES_PASSWORD=localtest postgres:16
+cd app/order-service
+docker build --provenance=false --sbom=false -t order-service .
+docker run -d --name order --network cloudnest-net -p 5001:5000 -e DB_HOST=pg -e DB_USER=cloudnest_admin -e DB_PASSWORD=localtest -e DB_SSLMODE=disable order-service
+Invoke-RestMethod -Method Post -Uri http://localhost:5001/orders -ContentType "application/json" -Body '{"item_id":1,"quantity":2}'
+Invoke-RestMethod http://localhost:5001/orders
+docker stop order pg; docker rm order pg; docker network rm cloudnest-net
+```
+
 The local password is a throwaway for a container that exists for a few minutes only.
 
 ## 8. Design decisions
