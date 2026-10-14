@@ -162,7 +162,7 @@ Built with Terraform in `terraform/rds.tf`:
 Verified with the AWS CLI: status available, PubliclyAccessible false, MultiAZ false, StorageEncrypted true, master password secret active.
 
 - The database bills by the hour, so it is created for testing and removed afterwards (create about 6 minutes, delete about 4 minutes).
-- The password is managed by AWS in Secrets Manager. ECS will inject it into the container as an environment variable at start, using the task execution role (permission still to be added).
+- The password is managed by AWS in Secrets Manager. ECS will inject it into the container as an environment variable at start, using the task execution role (permission added in order.tf).
 
 ### 6.8 Order service (built and tested locally, pushed to ECR, added 13-10-2026)
 
@@ -179,7 +179,28 @@ Files in `app/order-service`: `app.py`, `requirements.txt`, `Dockerfile`, `.dock
 - The orders table is created automatically on first use.
 - Tested locally with a throwaway PostgreSQL container on a Docker network: health OK, database reachable, two orders created and listed.
 - Second ECR repository `cloudnest/order-service` created with Terraform (same scan on push and lifecycle policy). Image pushed as a normal scannable image.
-- Still to do: ECS task definition (database password injected from Secrets Manager), load balancer routing for /orders, and the payment service.
+- Deployed to ECS in section 6.9. Still to do: the payment service.
+
+### 6.9 Order service in ECS and the paid-resources switch (done, added 14-10-2026)
+
+Built with Terraform in `terraform/order.tf` and `terraform/switch.tf`. The load balancer, database and menu service files were changed to follow the switch.
+
+| Resource | Name | Purpose |
+|---|---|---|
+| Variable | enable_paid | Controls all hourly-billed resources (default false) |
+| Security group | cloudnest-order-sg | Order service port 5000 from the load balancer only |
+| Target group | cloudnest-order-tg | Healthy order containers, checked on /health |
+| Listener rule | /orders and /orders/* | Sends these paths to the order service |
+| Log group | /ecs/cloudnest-order | Order container logs, kept 7 days |
+| Execution role policy | read-db-secret | GetSecretValue on the one database secret |
+| Task definition | cloudnest-order | Order image from ECR, 0.25 vCPU, 0.5 GB, secrets injected |
+| ECS service | cloudnest-order-service | Keeps the order container running behind the load balancer |
+
+- ECS fetches the database user and password from Secrets Manager when the container starts and passes them in as DB_USER and DB_PASSWORD. The password is never in code, Git or Terraform files.
+- The connection uses DB_SSLMODE=require (encrypted).
+- The database security group now accepts PostgreSQL only from the order service.
+- Tested through the load balancer: /menu served by the menu service, orders created and listed through /orders. No errors.
+- Afterwards enable_paid was set to false, which destroyed the 8 paid resources. Checks showed no load balancer, no database, no tasks and no leftover secret.
 
 ## 7. How to run
 
@@ -244,6 +265,16 @@ docker stop order pg; docker rm order pg; docker network rm cloudnest-net
 
 The local password is a throwaway for a container that exists for a few minutes only.
 
+**Switch paid resources on and off**
+
+```
+terraform apply                           # free resources only
+terraform plan -var="enable_paid=true"      # preview: 8 paid resources to add
+terraform apply -var="enable_paid=true"     # starts billing
+# test through the load balancer: http://<alb-dns-name>/menu and /orders
+terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid resources)
+```
+
 ## 8. Design decisions
 
 | Decision | Reason |
@@ -273,6 +304,11 @@ The local password is a throwaway for a container that exists for a few minutes 
 | Order service reads settings from environment variables | The same code runs locally and in AWS, and no password is written in code. |
 | Separate /health and /health/db endpoints | The load balancer health check never touches the database, so a database problem does not make healthy containers get killed. |
 | Scan findings with no available fix are accepted and documented | Debian has no fixed glibc or zlib yet. Fixes will be picked up by scheduled rebuilds. |
+| enable_paid switch (default false) | Every hourly-billed resource (load balancer, database, ECS services) is created only when it is true, so a plain terraform apply can never start billing by surprise. |
+| Database password injected by ECS from Secrets Manager | The container receives it as an environment variable at start. It never appears in code, Git or Terraform files. |
+| DB_SSLMODE set to require | The connection between the order service and the database is encrypted. |
+| Path-based routing on one load balancer | /orders goes to the order service and everything else to the menu service, so one address serves several services. |
+| Database security group allows only the order service | Least privilege: the menu service and the internet cannot reach the database. |
 
 ## 9. Security measures
 
@@ -290,6 +326,9 @@ The local password is a throwaway for a container that exists for a few minutes 
 - **Image scan findings (13-10-2026):** both images show 3 High findings: glibc (CVE-2026-5435, CVE-2026-19499) and zlib (CVE-2026-85091). The order image also shows 9 Medium and 3 Low. All High findings are Debian base image packages, not application code or Python libraries.
 - Checked inside the image with apt list --upgradable: Debian has no fixed glibc or zlib packages yet (only liblzma5 had an update), so the findings are accepted for now and documented.
 - Planned: scheduled rebuilds and scans in the CI/CD pipeline, failing the build on Critical findings that have a fix available.
+- The database security group now accepts PostgreSQL only from the order service security group. The order service security group accepts traffic only from the load balancer.
+- The execution role was given one extra permission, GetSecretValue on the single database secret, and nothing broader.
+- The enable_paid switch prevents accidental creation of paid resources.
 - IAM access to Billing was enabled by the root user (one-time setting) so the admin IAM user can view billing without using root.
 - Planned: least-privilege IAM roles, image scanning in the pipeline, encrypted database storage, CloudTrail logging.
 
@@ -303,6 +342,7 @@ The local password is a throwaway for a container that exists for a few minutes 
 - **Billed by the hour only while running:** the Fargate task and its public IPv4 address. Stopped with `menu_desired_count=0` after each test.
 - **Billed by the hour while it exists:** the load balancer. It is removed after each test with terraform destroy using -target.
 - **Billed by the hour while it exists:** the RDS database (about 6 minutes to create, about 4 to delete). It is removed after each session with a targeted destroy.
+- **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (8 resources, about 4 to 5 minutes).
 - Not used (to avoid cost): NAT Gateway, Multi-AZ database.
 - Billing console shows USD 0.00 for October 2026 so far (data can lag about 24 hours, so the ECS status command is the reliable check that nothing is running).
 
@@ -317,7 +357,8 @@ The local password is a throwaway for a container that exists for a few minutes 
 - [x] Run the menu service on ECS Fargate (public subnet, temporary)
 - [x] Load balancer and health checks (ALB, target group, health check on /health)
 - [x] Database (RDS PostgreSQL) in private subnets (created, verified private and encrypted, then removed to save credits)
-- [ ] Order and payment services (order service built, tested locally and pushed to ECR; ECS wiring and payment service still to do)
+- [x] Order service in ECS (secret injected from Secrets Manager, routed through the load balancer, private database)
+- [ ] Payment service
 - [ ] CI/CD pipeline with security scanning
 - [ ] Monitoring, alerts and dashboards
 - [ ] Failure testing and recovery demo
@@ -335,6 +376,7 @@ The local password is a throwaway for a container that exists for a few minutes 
 | 12-10-2026 | Added an Application Load Balancer, target group and health check with Terraform. Restricted the service security group to the load balancer only. Fixed a missing ECR image (CannotPullContainerError) by pushing it again. Both targets became healthy. Removed the load balancer and service afterwards to stop billing. |
 | 13-10-2026 | Added a private PostgreSQL database on RDS with Terraform (encrypted, not public, AWS-managed password). Verified it was available and private, then removed it. Noticed that a full terraform apply also rebuilt the load balancer and service, and removed them again. |
 | 13-10-2026 (later) | Built the order service (Flask and PostgreSQL) and tested it locally against a throwaway PostgreSQL container. Created a second ECR repository with a targeted Terraform apply and pushed the order image. Scanned: 3 High, 9 Medium, 3 Low, all High findings from the Debian base image. |
+| 14-10-2026 | Added the enable_paid switch for all hourly-billed resources. Deployed the order service to ECS with the database password injected from Secrets Manager, routed /orders through the load balancer and restricted the database to the order service. Tested through the load balancer with no errors, then removed all paid resources and checked the account was clean. |
 
 ## 13. Screenshots (add as evidence)
 
@@ -530,3 +572,26 @@ Save images in `docs/screenshots/` and link them here.
 - [ ] Save screenshots: order-local.png and order-scan.png
 
 **Next session:** a safety switch for the paid resources, the ECS task definition for the order service with the database password injected from Secrets Manager, routing /orders through the load balancer, then create, test and remove.
+
+### 14-10-2026: Order service in ECS and the paid-resources switch
+
+**Goal:** run the order service in the cloud with the database, and make sure paid resources can never start by accident.
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Added the enable_paid variable and made the load balancer, database and services depend on it | A plain terraform apply had rebuilt paid resources twice by surprise |
+| 2 | Created order.tf (security group, target group, listener rule, log group, task definition, service) | The order service runs behind the same load balancer as the menu |
+| 3 | Injected the database user and password from Secrets Manager | No password in code, Git or Terraform |
+| 4 | Restricted the database to the order service | Least privilege |
+| 5 | Switched the paid resources on, tested through the load balancer, then switched them off | Short, cheap test and a clean account afterwards |
+
+**Plan notes:** the first plan showed 4 to add and 1 to destroy instead of 3 to add. The extra pair was the database security group being replaced, because its description changed and AWS cannot edit a description. No database existed at that point, so it was safe.
+
+**Result:** tested through the load balancer with no errors. Switching off destroyed 8 resources, and checks showed no load balancer, no database, no tasks and no leftover secret.
+
+**Open items**
+- [ ] Save screenshots: order-cloud.png and ecs-two-services.png
+- [ ] Payment service
+- [ ] CI/CD pipeline with security scanning
+
+**Next session:** the payment service, then the CI/CD pipeline.
