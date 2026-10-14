@@ -36,6 +36,7 @@ resource "aws_ecs_task_definition" "menu" {
 }
 
 resource "aws_ecs_service" "menu" {
+  count                             = var.enable_paid ? 1 : 0
   name                              = "cloudnest-menu-service"
   cluster                           = aws_ecs_cluster.main.id
   task_definition                   = aws_ecs_task_definition.menu.arn

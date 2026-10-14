@@ -1,14 +1,14 @@
 resource "aws_security_group" "db" {
   name        = "cloudnest-db-sg"
-  description = "PostgreSQL access from the menu service only"
+  description = "PostgreSQL access from the order service only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "PostgreSQL from the menu service"
+    description     = "PostgreSQL from the order service"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.menu.id]
+    security_groups = [aws_security_group.order.id]
   }
 
   tags = { Name = "cloudnest-db-sg" }
@@ -21,6 +21,7 @@ resource "aws_db_subnet_group" "main" {
 }
 
 resource "aws_db_instance" "main" {
+  count             = var.enable_paid ? 1 : 0
   identifier        = "cloudnest-db"
   engine            = "postgres"
   engine_version    = "16"
@@ -47,5 +48,5 @@ resource "aws_db_instance" "main" {
 }
 
 output "db_endpoint" {
-  value = aws_db_instance.main.endpoint
+  value = one(aws_db_instance.main[*].endpoint)
 }

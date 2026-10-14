@@ -22,6 +22,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_lb" "main" {
+  count              = var.enable_paid ? 1 : 0
   name               = "cloudnest-alb"
   load_balancer_type = "application"
   internal           = false
@@ -49,7 +50,8 @@ resource "aws_lb_target_group" "menu" {
 }
 
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
+  count             = var.enable_paid ? 1 : 0
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 80
   protocol          = "HTTP"
 
@@ -60,5 +62,5 @@ resource "aws_lb_listener" "http" {
 }
 
 output "alb_dns_name" {
-  value = aws_lb.main.dns_name
+  value = one(aws_lb.main[*].dns_name)
 }
