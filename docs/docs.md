@@ -179,7 +179,7 @@ Files in `app/order-service`: `app.py`, `requirements.txt`, `Dockerfile`, `.dock
 - The orders table is created automatically on first use.
 - Tested locally with a throwaway PostgreSQL container on a Docker network: health OK, database reachable, two orders created and listed.
 - Second ECR repository `cloudnest/order-service` created with Terraform (same scan on push and lifecycle policy). Image pushed as a normal scannable image.
-- Deployed to ECS in section 6.9. Still to do: the payment service.
+- Deployed to ECS in section 6.9.
 
 ### 6.9 Order service in ECS and the paid-resources switch (done, added 14-10-2026)
 
@@ -201,6 +201,30 @@ Built with Terraform in `terraform/order.tf` and `terraform/switch.tf`. The load
 - The database security group now accepts PostgreSQL only from the order service.
 - Tested through the load balancer: /menu served by the menu service, orders created and listed through /orders. No errors.
 - Afterwards enable_paid was set to false, which destroyed the 8 paid resources. Checks showed no load balancer, no database, no tasks and no leftover secret.
+
+### 6.10 Payment service (done, added 20-10-2026)
+
+Files in `app/payment-service`: `app.py`, `requirements.txt`, `Dockerfile`, `.dockerignore`. Terraform: a third repository in `terraform/ecr.tf` and the ECS wiring in `terraform/payment.tf`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Health check used by the load balancer |
+| `POST /pay` | Takes order_id (whole number) and amount (positive number). Approves amounts up to 5000 and declines above. Returns a payment_id. |
+
+| Resource | Name | Purpose |
+|---|---|---|
+| ECR repository | cloudnest/payment-service | Image storage, scan on push, keeps the last 5 images |
+| Security group | cloudnest-payment-sg | Port 5000 from the load balancer only |
+| Target group | cloudnest-payment-tg | Healthy payment containers, checked on /health |
+| Listener rule | /pay and /pay/* | Sends these paths to the payment service |
+| Log group | /ecs/cloudnest-payment | Container logs, kept 7 days |
+| Task definition and service | cloudnest-payment | 0.25 vCPU, 0.5 GB, runs behind the load balancer |
+
+- The service is simulated and stateless. It has no database access and no secrets.
+- Tested locally: an amount of 249 was approved and an amount of 9000 was declined.
+- Tested through the load balancer together with the menu and order services, with no errors.
+- The enable_paid switch now controls 11 resources. After testing, enable_paid=false destroyed all 11, and checks showed no load balancer, database, tasks or leftover secret.
+- Image scan results for this image are checked with the findings command and recorded in section 9.
 
 ## 7. How to run
 
@@ -269,10 +293,10 @@ The local password is a throwaway for a container that exists for a few minutes 
 
 ```
 terraform apply                           # free resources only
-terraform plan -var="enable_paid=true"      # preview: 8 paid resources to add
+terraform plan -var="enable_paid=true"      # preview: 11 paid resources to add
 terraform apply -var="enable_paid=true"     # starts billing
 # test through the load balancer: http://<alb-dns-name>/menu and /orders
-terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid resources)
+terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid resources)
 ```
 
 ## 8. Design decisions
@@ -304,6 +328,9 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid 
 | Order service reads settings from environment variables | The same code runs locally and in AWS, and no password is written in code. |
 | Separate /health and /health/db endpoints | The load balancer health check never touches the database, so a database problem does not make healthy containers get killed. |
 | Scan findings with no available fix are accepted and documented | Debian has no fixed glibc or zlib yet. Fixes will be picked up by scheduled rebuilds. |
+| Payment service is simulated and stateless | It demonstrates a third independent microservice without needing a real payment provider or another database. |
+| Each service has its own security group, target group, log group and image repository | Services can be scaled, secured, monitored and deployed independently. |
+| Path-based rules for /orders and /pay on one load balancer | One public address serves all services, and each service stays private behind it. |
 | enable_paid switch (default false) | Every hourly-billed resource (load balancer, database, ECS services) is created only when it is true, so a plain terraform apply can never start billing by surprise. |
 | Database password injected by ECS from Secrets Manager | The container receives it as an environment variable at start. It never appears in code, Git or Terraform files. |
 | DB_SSLMODE set to require | The connection between the order service and the database is encrypted. |
@@ -326,6 +353,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid 
 - **Image scan findings (13-10-2026):** both images show 3 High findings: glibc (CVE-2026-5435, CVE-2026-19499) and zlib (CVE-2026-85091). The order image also shows 9 Medium and 3 Low. All High findings are Debian base image packages, not application code or Python libraries.
 - Checked inside the image with apt list --upgradable: Debian has no fixed glibc or zlib packages yet (only liblzma5 had an update), so the findings are accepted for now and documented.
 - Planned: scheduled rebuilds and scans in the CI/CD pipeline, failing the build on Critical findings that have a fix available.
+- The payment service has no database access and no secrets. Its security group accepts traffic only from the load balancer, and its image is scanned on push like the others.
 - The database security group now accepts PostgreSQL only from the order service security group. The order service security group accepts traffic only from the load balancer.
 - The execution role was given one extra permission, GetSecretValue on the single database secret, and nothing broader.
 - The enable_paid switch prevents accidental creation of paid resources.
@@ -342,7 +370,8 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid 
 - **Billed by the hour only while running:** the Fargate task and its public IPv4 address. Stopped with `menu_desired_count=0` after each test.
 - **Billed by the hour while it exists:** the load balancer. It is removed after each test with terraform destroy using -target.
 - **Billed by the hour while it exists:** the RDS database (about 6 minutes to create, about 4 to delete). It is removed after each session with a targeted destroy.
-- **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (8 resources, about 4 to 5 minutes).
+- **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (11 resources, about 4 to 5 minutes).
+- Adding the payment service raised the switch from 8 to 11 paid resources. Each extra small Fargate task adds only a few cents per hour while it runs.
 - Not used (to avoid cost): NAT Gateway, Multi-AZ database.
 - Billing console shows USD 0.00 for October 2026 so far (data can lag about 24 hours, so the ECS status command is the reliable check that nothing is running).
 
@@ -358,7 +387,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid 
 - [x] Load balancer and health checks (ALB, target group, health check on /health)
 - [x] Database (RDS PostgreSQL) in private subnets (created, verified private and encrypted, then removed to save credits)
 - [x] Order service in ECS (secret injected from Secrets Manager, routed through the load balancer, private database)
-- [ ] Payment service
+- [x] Payment service (simulated: approves amounts up to 5000, declines above, routed through /pay)
 - [ ] CI/CD pipeline with security scanning
 - [ ] Monitoring, alerts and dashboards
 - [ ] Failure testing and recovery demo
@@ -377,6 +406,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 8 paid 
 | 13-10-2026 | Added a private PostgreSQL database on RDS with Terraform (encrypted, not public, AWS-managed password). Verified it was available and private, then removed it. Noticed that a full terraform apply also rebuilt the load balancer and service, and removed them again. |
 | 13-10-2026 (later) | Built the order service (Flask and PostgreSQL) and tested it locally against a throwaway PostgreSQL container. Created a second ECR repository with a targeted Terraform apply and pushed the order image. Scanned: 3 High, 9 Medium, 3 Low, all High findings from the Debian base image. |
 | 14-10-2026 | Added the enable_paid switch for all hourly-billed resources. Deployed the order service to ECS with the database password injected from Secrets Manager, routed /orders through the load balancer and restricted the database to the order service. Tested through the load balancer with no errors, then removed all paid resources and checked the account was clean. |
+| 20-10-2026 | Built the payment service (simulated, no database) and tested it locally. Created a third ECR repository, pushed the image and wired the service into ECS with its own security group, target group and /pay listener rule. Tested all three services through the load balancer, then switched paid resources off (11 destroyed) and checked the account was clean. |
 
 ## 13. Screenshots (add as evidence)
 
@@ -591,7 +621,32 @@ Save images in `docs/screenshots/` and link them here.
 
 **Open items**
 - [ ] Save screenshots: order-cloud.png and ecs-two-services.png
-- [ ] Payment service
+- [x] Payment service (simulated: approves amounts up to 5000, declines above, routed through /pay)
 - [ ] CI/CD pipeline with security scanning
 
 **Next session:** the payment service, then the CI/CD pipeline.
+
+### 20-10-2026: Payment service
+
+**Goal:** add the third microservice and run all three behind one load balancer.
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Built the payment service (Flask, simulated approvals) | A third independent service with a different job |
+| 2 | Tested it locally with an approved and a declined payment | Code problems are found before any cloud cost |
+| 3 | Created a third ECR repository and pushed the image | One image per service, scanned on push |
+| 4 | Wrote payment.tf (security group, target group, /pay rule, task definition, service) | Same pattern as the order service |
+| 5 | Checked the plan before each apply | The free part showed 3 to add, and the paid preview showed 11 to add |
+| 6 | Switched paid resources on, tested /menu, /orders and /pay through one address, then switched them off | Short, cheap test and a clean account afterwards |
+
+**Result:** all three services were reached through the single load balancer address. Switching off destroyed 11 resources.
+
+**Lessons:** the switch makes the paid cost of each new service visible (8 resources became 11). A new service follows the same repeatable pattern: image, repository, security group, target group, listener rule, task definition and service.
+
+**Open items**
+- [ ] Save screenshots: payment-local.png, all-services-cloud.png and ecs-three-services.png
+- [ ] Record the payment image scan counts in section 9
+- [ ] CI/CD pipeline with security scanning
+- [ ] Monitoring, alerts and dashboards
+
+**Next session:** the CI/CD pipeline with GitHub Actions: build, scan, push to ECR and deploy on every code push.
