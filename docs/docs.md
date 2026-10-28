@@ -226,6 +226,29 @@ Files in `app/payment-service`: `app.py`, `requirements.txt`, `Dockerfile`, `.do
 - The enable_paid switch now controls 11 resources. After testing, enable_paid=false destroyed all 11, and checks showed no load balancer, database, tasks or leftover secret.
 - Image scan results for this image are checked with the findings command and recorded in section 9.
 
+### 6.11 CI/CD pipeline (done, added 28-10-2026)
+
+Files: `.github/workflows/build.yml` (the pipeline) and `terraform/cicd.tf` (the AWS side, 3 resources).
+
+| Piece | Purpose |
+|---|---|
+| IAM OIDC identity provider for GitHub | Lets AWS trust short-lived tokens issued by GitHub Actions |
+| IAM role cloudnest-github-actions | Assumed by workflows on the main branch of this repository only |
+| Role policy | ECR login, push and scan results for the three repositories, and describe and redeploy services in the cluster |
+| GitHub variable AWS_ROLE_ARN | Holds the role address, so the account ID is not in the code |
+
+**What the pipeline does on every push to main that changes app code or the workflow**
+1. Builds the menu, order and payment images in parallel (a matrix).
+2. Pushes each image tagged with the commit ID.
+3. Waits for the ECR scan and fails the build if there is any Critical finding. High findings only raise a warning.
+4. Publishes the image as latest only after the scan has passed.
+5. Redeploys each service that is running, and skips services that are not running (enable_paid is off).
+
+- Login uses OIDC, so no AWS access keys are stored anywhere.
+- The pipeline cannot create paid resources. It only builds, scans, publishes and redeploys.
+- Build results and scan counts appear in the Actions tab of the repository.
+- Actions used: actions/checkout v6, aws-actions/configure-aws-credentials v6 and aws-actions/amazon-ecr-login v2.
+
 ## 7. How to run
 
 **Menu service locally**
@@ -328,6 +351,13 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 | Order service reads settings from environment variables | The same code runs locally and in AWS, and no password is written in code. |
 | Separate /health and /health/db endpoints | The load balancer health check never touches the database, so a database problem does not make healthy containers get killed. |
 | Scan findings with no available fix are accepted and documented | Debian has no fixed glibc or zlib yet. Fixes will be picked up by scheduled rebuilds. |
+| GitHub Actions logs in to AWS with OIDC, not stored keys | GitHub gets a short-lived token for one IAM role. No access keys exist in GitHub or in the repo, so there is nothing to leak or rotate. |
+| The IAM role trusts only this repository on the main branch | Other repositories and other branches cannot use it. |
+| The pipeline role has least privilege | It can push to the three ECR repositories, read their scan results and redeploy services in one cluster. It cannot touch the database, network, secrets or billing. |
+| Images are pushed with the commit ID as the tag | Every build is traceable to the exact code that produced it. |
+| latest is published only after the scan passes | A vulnerable image can never become the one ECS pulls. |
+| Build fails on Critical findings, High findings only warn | The known High findings are Debian base image packages with no fix yet. Blocking on them would stop all deployments. |
+| Deploy step redeploys only services that are running | It works with the enable_paid switch, so the pipeline never creates paid resources. |
 | Payment service is simulated and stateless | It demonstrates a third independent microservice without needing a real payment provider or another database. |
 | Each service has its own security group, target group, log group and image repository | Services can be scaled, secured, monitored and deployed independently. |
 | Path-based rules for /orders and /pay on one load balancer | One public address serves all services, and each service stays private behind it. |
@@ -352,7 +382,9 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - Database storage is encrypted. The master password is generated and stored by AWS in Secrets Manager (manage_master_user_password), so no password exists in code, Git or Terraform files.
 - **Image scan findings (13-10-2026):** both images show 3 High findings: glibc (CVE-2026-5435, CVE-2026-19499) and zlib (CVE-2026-85091). The order image also shows 9 Medium and 3 Low. All High findings are Debian base image packages, not application code or Python libraries.
 - Checked inside the image with apt list --upgradable: Debian has no fixed glibc or zlib packages yet (only liblzma5 had an update), so the findings are accepted for now and documented.
-- Planned: scheduled rebuilds and scans in the CI/CD pipeline, failing the build on Critical findings that have a fix available.
+- The CI/CD pipeline rebuilds and scans every image on each push to main and blocks the build on any Critical finding. High findings raise a warning.
+- GitHub Actions authenticates to AWS with OIDC (short-lived tokens). No AWS access keys are stored in GitHub or the repository. The role can be assumed only by workflows on the main branch of this repository.
+- Planned: scheduled rebuilds so base image fixes are picked up when Debian publishes them.
 - The payment service has no database access and no secrets. Its security group accepts traffic only from the load balancer, and its image is scanned on push like the others.
 - The database security group now accepts PostgreSQL only from the order service security group. The order service security group accepts traffic only from the load balancer.
 - The execution role was given one extra permission, GetSecretValue on the single database secret, and nothing broader.
@@ -372,6 +404,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - **Billed by the hour while it exists:** the RDS database (about 6 minutes to create, about 4 to delete). It is removed after each session with a targeted destroy.
 - **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (11 resources, about 4 to 5 minutes).
 - Adding the payment service raised the switch from 8 to 11 paid resources. Each extra small Fargate task adds only a few cents per hour while it runs.
+- The pipeline resources (identity provider, role, policy) are free. GitHub Actions minutes for a private repository are included in the free allowance, and the pipeline never creates paid resources.
 - Not used (to avoid cost): NAT Gateway, Multi-AZ database.
 - Billing console shows USD 0.00 for October 2026 so far (data can lag about 24 hours, so the ECS status command is the reliable check that nothing is running).
 
@@ -388,7 +421,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - [x] Database (RDS PostgreSQL) in private subnets (created, verified private and encrypted, then removed to save credits)
 - [x] Order service in ECS (secret injected from Secrets Manager, routed through the load balancer, private database)
 - [x] Payment service (simulated: approves amounts up to 5000, declines above, routed through /pay)
-- [ ] CI/CD pipeline with security scanning
+- [x] CI/CD pipeline with security scanning (GitHub Actions, OIDC login, ECR scan gate, automatic redeploy)
 - [ ] Monitoring, alerts and dashboards
 - [ ] Failure testing and recovery demo
 - [ ] Final presentation, demo and README
@@ -407,6 +440,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 | 13-10-2026 (later) | Built the order service (Flask and PostgreSQL) and tested it locally against a throwaway PostgreSQL container. Created a second ECR repository with a targeted Terraform apply and pushed the order image. Scanned: 3 High, 9 Medium, 3 Low, all High findings from the Debian base image. |
 | 14-10-2026 | Added the enable_paid switch for all hourly-billed resources. Deployed the order service to ECS with the database password injected from Secrets Manager, routed /orders through the load balancer and restricted the database to the order service. Tested through the load balancer with no errors, then removed all paid resources and checked the account was clean. |
 | 20-10-2026 | Built the payment service (simulated, no database) and tested it locally. Created a third ECR repository, pushed the image and wired the service into ECS with its own security group, target group and /pay listener rule. Tested all three services through the load balancer, then switched paid resources off (11 destroyed) and checked the account was clean. |
+| 28-10-2026 | Built the CI/CD pipeline: GitHub Actions builds the three images, pushes them tagged with the commit ID, waits for the ECR scan, blocks Critical findings, publishes latest only after the scan passes and redeploys running services. Logs in to AWS with OIDC and a least-privilege role created with Terraform (3 resources). |
 
 ## 13. Screenshots (add as evidence)
 
@@ -650,3 +684,27 @@ Save images in `docs/screenshots/` and link them here.
 - [ ] Monitoring, alerts and dashboards
 
 **Next session:** the CI/CD pipeline with GitHub Actions: build, scan, push to ECR and deploy on every code push.
+
+### 28-10-2026: CI/CD pipeline
+
+**Goal:** make every code change build, get scanned and ship automatically, without stored cloud keys.
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Checked the current versions of the GitHub Actions used | Action versions change often |
+| 2 | Wrote cicd.tf (OIDC provider, role, least-privilege policy) | AWS trusts GitHub with short-lived tokens, no stored keys |
+| 3 | Read the plan before applying | It showed 3 to add, 0 to change, 0 to destroy, as expected |
+| 4 | Stored the role address as a GitHub variable | Keeps the account ID out of the code |
+| 5 | Wrote build.yml and pushed it | The push itself started the first pipeline run |
+| 6 | Watched the run in the Actions tab | Build, scan gate, publish and deploy steps |
+
+**Lessons:** OIDC removes the need for stored keys. Publishing latest only after the scan passes keeps bad images out of production. Blocking on Critical findings but only warning on High is a practical gate when the High findings have no fix yet. The deploy step must check whether a service exists, so the pipeline works with the cost switch.
+
+**Open items**
+- [ ] Save screenshots: pipeline-green.png and pipeline-scan-summary.png
+- [ ] Monitoring, alerts and dashboards
+- [ ] Failure testing and recovery demo
+- [ ] README and final presentation
+- [ ] Make the repository public after a final secret check
+
+**Next session:** monitoring with CloudWatch (dashboard and alarms), then a failure test, the README and the presentation.
