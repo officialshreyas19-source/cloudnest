@@ -1,0 +1,97 @@
+name: build-scan-push
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [menu, order, payment]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        env:
+          REGISTRY: ${{ steps.login.outputs.registry }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          REPO="cloudnest/${SERVICE}-service"
+          echo "REPO=${REPO}" >> "$GITHUB_ENV"
+          docker build --provenance=false --sbom=false -t "${REGISTRY}/${REPO}:${GITHUB_SHA}" "app/${SERVICE}-service"
+
+      - name: Push image tagged with the commit
+        env:
+          REGISTRY: ${{ steps.login.outputs.registry }}
+        run: docker push "${REGISTRY}/${REPO}:${GITHUB_SHA}"
+
+      - name: Wait for the ECR scan and block on Critical findings
+        run: |
+          aws ecr wait image-scan-complete --repository-name "$REPO" --image-id imageTag="$GITHUB_SHA"
+          COUNTS=$(aws ecr describe-image-scan-findings --repository-name "$REPO" --image-id imageTag="$GITHUB_SHA" --query "imageScanFindings.findingSeverityCounts" --output json)
+          CRITICAL=$(echo "$COUNTS" | jq -r '.CRITICAL // 0')
+          HIGH=$(echo "$COUNTS" | jq -r '.HIGH // 0')
+          echo "### Scan result for $REPO" >> "$GITHUB_STEP_SUMMARY"
+          echo "Severity counts: $COUNTS" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "Blocked: $CRITICAL Critical findings in $REPO"
+            exit 1
+          fi
+          if [ "$HIGH" -gt 0 ]; then
+            echo "::warning::$HIGH High findings in $REPO (see the ECR scan results)"
+          fi
+
+      - name: Publish as latest (only after the scan passed)
+        run: |
+          MANIFEST=$(aws ecr batch-get-image --repository-name "$REPO" --image-ids imageTag="$GITHUB_SHA" --query "images[0].imageManifest" --output text)
+          if ! OUT=$(aws ecr put-image --repository-name "$REPO" --image-tag latest --image-manifest "$MANIFEST" 2>&1); then
+            echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT"; exit 1; }
+          fi
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Redeploy the services that are running
+        run: |
+          for svc in menu order payment; do
+            NAME="cloudnest-${svc}-service"
+            STATUS=$(aws ecs describe-services --cluster cloudnest-cluster --services "$NAME" --query "services[0].status" --output text)
+            if [ "$STATUS" = "ACTIVE" ]; then
+              aws ecs update-service --cluster cloudnest-cluster --service "$NAME" --force-new-deployment > /dev/null
+              echo "Redeployed $NAME"
+            else
+              echo "Skipped $NAME (not running because enable_paid is off)"
+            fi
+          done
