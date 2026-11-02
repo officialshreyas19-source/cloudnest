@@ -249,6 +249,24 @@ Files: `.github/workflows/build.yml` (the pipeline) and `terraform/cicd.tf` (the
 - Build results and scan counts appear in the Actions tab of the repository.
 - Actions used: actions/checkout v6, aws-actions/configure-aws-credentials v6 and aws-actions/amazon-ecr-login v2.
 
+### 6.12 Monitoring and failure test (done, added 02-11-2026)
+
+Built with Terraform in `terraform/monitoring.tf`. The topic and subscription are always on and free. The dashboard and alarms follow the enable_paid switch.
+
+| Resource | Purpose |
+|---|---|
+| SNS topic cloudnest-alerts and email subscription | Delivers alarm and recovery emails (the subscription must be confirmed) |
+| Alarm cloudnest-alb-5xx | 5 or more load balancer 5xx errors in a minute |
+| Alarms cloudnest-menu, order and payment unhealthy-hosts | An unhealthy container for 2 minutes |
+| Alarms cloudnest-menu, order and payment cpu-high | Service CPU above 80 percent for 3 minutes |
+| Alarm cloudnest-db-cpu-high | Database CPU above 80 percent |
+| Dashboard cloudnest | Requests and 5xx errors, healthy containers per service, service CPU, database CPU and connections |
+
+- Alarms email on both alarm and recovery. Missing data counts as not breaching, so a switched-off system stays quiet.
+- A test alarm was triggered with aws cloudwatch set-alarm-state to prove the email path works.
+- **Failure test:** one menu task was stopped on purpose while requests were sent to the load balancer. ECS started a replacement automatically and the load balancer registered it once healthy. With one container per service there is a short gap, a deliberate cost trade-off. Production would run two or more containers across zones.
+- Afterwards enable_paid was set to false, which removed all 20 paid resources, and checks confirmed no load balancer, database, tasks or leftover secret.
+
 ## 7. How to run
 
 **Menu service locally**
@@ -316,10 +334,10 @@ The local password is a throwaway for a container that exists for a few minutes 
 
 ```
 terraform apply                           # free resources only
-terraform plan -var="enable_paid=true"      # preview: 11 paid resources to add
+terraform plan -var="enable_paid=true"      # preview: 20 paid resources to add
 terraform apply -var="enable_paid=true"     # starts billing
 # test through the load balancer: http://<alb-dns-name>/menu and /orders
-terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid resources)
+terraform apply -var="enable_paid=false"    # stops billing (removes the 20 paid resources)
 ```
 
 ## 8. Design decisions
@@ -358,6 +376,11 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 | latest is published only after the scan passes | A vulnerable image can never become the one ECS pulls. |
 | Build fails on Critical findings, High findings only warn | The known High findings are Debian base image packages with no fix yet. Blocking on them would stop all deployments. |
 | Deploy step redeploys only services that are running | It works with the enable_paid switch, so the pipeline never creates paid resources. |
+| Alarms notify through an SNS topic by email | One topic can feed email today and other channels later, and it keeps alarm logic separate from delivery. |
+| Alert email stored in terraform.tfvars, which Git ignores | The address is personal data and stays out of the repository. |
+| Alarms and dashboard follow the enable_paid switch | They watch resources that only exist while the switch is on. Missing data counts as fine, so a switched-off system does not send alerts. |
+| Alarm thresholds: 5 or more load balancer 5xx errors in a minute, an unhealthy container for 2 minutes, CPU above 80 percent | Simple, explainable thresholds that catch real failures without constant noise. |
+| One container per service | Keeps cost low. The failure test shows a short gap while ECS replaces a stopped container. Production would run two or more across zones to remove it. |
 | Payment service is simulated and stateless | It demonstrates a third independent microservice without needing a real payment provider or another database. |
 | Each service has its own security group, target group, log group and image repository | Services can be scaled, secured, monitored and deployed independently. |
 | Path-based rules for /orders and /pay on one load balancer | One public address serves all services, and each service stays private behind it. |
@@ -389,6 +412,8 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - The database security group now accepts PostgreSQL only from the order service security group. The order service security group accepts traffic only from the load balancer.
 - The execution role was given one extra permission, GetSecretValue on the single database secret, and nothing broader.
 - The enable_paid switch prevents accidental creation of paid resources.
+- Alarm emails go through an SNS topic. The subscription must be confirmed by clicking the link in the email, otherwise messages are silently dropped.
+- The alert email address is kept in terraform.tfvars, which .gitignore excludes, so it is never pushed to GitHub.
 - IAM access to Billing was enabled by the root user (one-time setting) so the admin IAM user can view billing without using root.
 - Planned: least-privilege IAM roles, image scanning in the pipeline, encrypted database storage, CloudTrail logging.
 
@@ -402,9 +427,11 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - **Billed by the hour only while running:** the Fargate task and its public IPv4 address. Stopped with `menu_desired_count=0` after each test.
 - **Billed by the hour while it exists:** the load balancer. It is removed after each test with terraform destroy using -target.
 - **Billed by the hour while it exists:** the RDS database (about 6 minutes to create, about 4 to delete). It is removed after each session with a targeted destroy.
-- **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (11 resources, about 4 to 5 minutes).
+- **enable_paid switch:** terraform apply creates only free resources. terraform apply -var="enable_paid=true" starts the paid ones (load balancer, database, menu and order services). terraform apply -var="enable_paid=false" removes them (20 resources, about 4 to 5 minutes).
 - Adding the payment service raised the switch from 8 to 11 paid resources. Each extra small Fargate task adds only a few cents per hour while it runs.
 - The pipeline resources (identity provider, role, policy) are free. GitHub Actions minutes for a private repository are included in the free allowance, and the pipeline never creates paid resources.
+- The enable_paid switch now controls 20 resources: the 11 services, load balancer and database resources, plus the CloudWatch dashboard and 8 alarms.
+- The SNS topic and email subscription are free and stay on. The dashboard and alarms are small and fall within the CloudWatch free allowance at this scale (check the current CloudWatch pricing page).
 - Not used (to avoid cost): NAT Gateway, Multi-AZ database.
 - Billing console shows USD 0.00 for October 2026 so far (data can lag about 24 hours, so the ECS status command is the reliable check that nothing is running).
 
@@ -422,8 +449,8 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 - [x] Order service in ECS (secret injected from Secrets Manager, routed through the load balancer, private database)
 - [x] Payment service (simulated: approves amounts up to 5000, declines above, routed through /pay)
 - [x] CI/CD pipeline with security scanning (GitHub Actions, OIDC login, ECR scan gate, automatic redeploy)
-- [ ] Monitoring, alerts and dashboards
-- [ ] Failure testing and recovery demo
+- [x] Monitoring, alerts and dashboards (CloudWatch dashboard, 8 alarms, SNS email alerts)
+- [x] Failure testing and recovery demo (stopped a task on purpose, ECS started a replacement)
 - [ ] Final presentation, demo and README
 
 ## 12. Progress log
@@ -441,6 +468,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 11 paid
 | 14-10-2026 | Added the enable_paid switch for all hourly-billed resources. Deployed the order service to ECS with the database password injected from Secrets Manager, routed /orders through the load balancer and restricted the database to the order service. Tested through the load balancer with no errors, then removed all paid resources and checked the account was clean. |
 | 20-10-2026 | Built the payment service (simulated, no database) and tested it locally. Created a third ECR repository, pushed the image and wired the service into ECS with its own security group, target group and /pay listener rule. Tested all three services through the load balancer, then switched paid resources off (11 destroyed) and checked the account was clean. |
 | 28-10-2026 | Built the CI/CD pipeline: GitHub Actions builds the three images, pushes them tagged with the commit ID, waits for the ECR scan, blocks Critical findings, publishes latest only after the scan passes and redeploys running services. Logs in to AWS with OIDC and a least-privilege role created with Terraform (3 resources). |
+| 02-11-2026 | Added monitoring: an SNS topic with a confirmed email subscription, a CloudWatch dashboard (requests and 5xx, healthy containers, service CPU, database CPU and connections) and 8 alarms (load balancer 5xx, unhealthy containers per service, CPU per service, database CPU). Sent a test alarm to prove the email arrives. Stopped a service task on purpose to show ECS replacing it. Switched all 20 paid resources off and checked the account was clean. |
 
 ## 13. Screenshots (add as evidence)
 
@@ -681,7 +709,7 @@ Save images in `docs/screenshots/` and link them here.
 - [ ] Save screenshots: payment-local.png, all-services-cloud.png and ecs-three-services.png
 - [ ] Record the payment image scan counts in section 9
 - [ ] CI/CD pipeline with security scanning
-- [ ] Monitoring, alerts and dashboards
+- [x] Monitoring, alerts and dashboards
 
 **Next session:** the CI/CD pipeline with GitHub Actions: build, scan, push to ECR and deploy on every code push.
 
@@ -702,9 +730,36 @@ Save images in `docs/screenshots/` and link them here.
 
 **Open items**
 - [ ] Save screenshots: pipeline-green.png and pipeline-scan-summary.png
-- [ ] Monitoring, alerts and dashboards
-- [ ] Failure testing and recovery demo
+- [x] Monitoring, alerts and dashboards
+- [x] Failure testing and recovery demo
 - [ ] README and final presentation
 - [ ] Make the repository public after a final secret check
 
 **Next session:** monitoring with CloudWatch (dashboard and alarms), then a failure test, the README and the presentation.
+
+### 02-11-2026: Monitoring and failure test
+
+**Goal:** see what the system is doing, get emailed when something is wrong, and prove it recovers from a failure.
+
+| Step | What | Why |
+|---|---|---|
+| 1 | Wrote monitoring.tf (SNS, alarms, dashboard) | The system watches itself and tells me |
+| 2 | Kept the alert email in terraform.tfvars | Personal data stays out of Git |
+| 3 | Confirmed the email subscription | Unconfirmed subscriptions drop every message |
+| 4 | Previewed the paid plan, 20 to add, then switched on | Checked the number matched before billing started |
+| 5 | Sent traffic and read the dashboard | Graphs of requests, healthy containers and CPU |
+| 6 | Triggered a test alarm | Proved the email path works |
+| 7 | Stopped a task on purpose | Showed ECS replacing a failed container |
+| 8 | Switched everything off and checked | Nothing hourly-billed left |
+
+**Problem and fix:** the first apply ran before the real email was in terraform.tfvars, so the subscription was created for the placeholder address and could never be confirmed. Terraform replaced it after the file was corrected. The leftover placeholder subscription stays pending in AWS and expires by itself, because AWS cannot delete an unconfirmed subscription. Lesson: fill in variables before the first apply, and always confirm the email link.
+
+**Lessons:** a dashboard shows what is happening, alarms tell you when it matters, and the failure test proves the design. Alarms for resources that only exist while the switch is on must treat missing data as fine.
+
+**Open items**
+- [ ] Save screenshots: dashboard.png, alarms.png, alarm-email.png, failure-test.png (crop email and account ID)
+- [ ] README
+- [ ] Final presentation and demo script
+- [ ] Final secret check, then make the repository public
+
+**Next session:** the README and the presentation.
