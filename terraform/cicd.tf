@@ -22,7 +22,7 @@ resource "aws_iam_role" "github_actions" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo_subject}:ref:refs/heads/main"
         }
       }
     }]
@@ -73,4 +73,9 @@ resource "aws_iam_role_policy" "github_actions" {
 
 output "github_actions_role_arn" {
   value = aws_iam_role.github_actions.arn
+}
+
+variable "github_repo_subject" {
+  type    = string
+  default = "officialshreyas19-source@227978214/cloudnest@1408389429"
 }

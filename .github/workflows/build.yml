@@ -52,7 +52,17 @@ jobs:
 
       - name: Wait for the ECR scan and block on Critical findings
         run: |
-          aws ecr wait image-scan-complete --repository-name "$REPO" --image-id imageTag="$GITHUB_SHA"
+          STATUS=""
+          for i in $(seq 1 36); do
+            OUT=$(aws ecr describe-image-scan-findings --repository-name "$REPO" --image-id imageTag="$GITHUB_SHA" --query "imageScanStatus.status" --output text 2>&1) || true
+            echo "Attempt $i: $OUT"
+            case "$OUT" in
+              COMPLETE) STATUS=COMPLETE; break ;;
+              FAILED) echo "The ECR scan failed"; exit 1 ;;
+            esac
+            sleep 5
+          done
+          [ "$STATUS" = "COMPLETE" ] || { echo "The scan did not complete in time"; exit 1; }
           COUNTS=$(aws ecr describe-image-scan-findings --repository-name "$REPO" --image-id imageTag="$GITHUB_SHA" --query "imageScanFindings.findingSeverityCounts" --output json)
           CRITICAL=$(echo "$COUNTS" | jq -r '.CRITICAL // 0')
           HIGH=$(echo "$COUNTS" | jq -r '.HIGH // 0')
