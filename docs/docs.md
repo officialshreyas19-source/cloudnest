@@ -405,6 +405,7 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 20 paid
 - Database storage is encrypted. The master password is generated and stored by AWS in Secrets Manager (manage_master_user_password), so no password exists in code, Git or Terraform files.
 - **Image scan findings (13-10-2026):** both images show 3 High findings: glibc (CVE-2026-5435, CVE-2026-19499) and zlib (CVE-2026-85091). The order image also shows 9 Medium and 3 Low. All High findings are Debian base image packages, not application code or Python libraries.
 - Checked inside the image with apt list --upgradable: Debian has no fixed glibc or zlib packages yet (only liblzma5 had an update), so the findings are accepted for now and documented.
+- Update (10-11-2026): the pipeline-built menu image shows 4 High findings, the earlier three plus a second zlib finding (CVE-2026-76844). All are Debian base image packages and none is Critical, so the gate passes and High findings raise a warning. A rebuild picks up fixes when Debian publishes them.
 - The CI/CD pipeline rebuilds and scans every image on each push to main and blocks the build on any Critical finding. High findings raise a warning.
 - GitHub Actions authenticates to AWS with OIDC (short-lived tokens). No AWS access keys are stored in GitHub or the repository. The role can be assumed only by workflows on the main branch of this repository.
 - Planned: scheduled rebuilds so base image fixes are picked up when Debian publishes them.
