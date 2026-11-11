@@ -245,6 +245,8 @@ Files: `.github/workflows/build.yml` (the pipeline) and `terraform/cicd.tf` (the
 5. Redeploys each service that is running, and skips services that are not running (enable_paid is off).
 
 - Login uses OIDC, so no AWS access keys are stored anywhere.
+- The role trust rule matches the exact subject GitHub sends, which includes numeric owner and repository IDs (found by printing the claims in a temporary debug workflow).
+- The scan step polls ECR until the scan is complete, because the scan starts a moment after the push. Verified: a full run passes with all three builds green and the deploy job skipping services that are not running.
 - The pipeline cannot create paid resources. It only builds, scans, publishes and redeploys.
 - Build results and scan counts appear in the Actions tab of the repository.
 - Actions used: actions/checkout v6, aws-actions/configure-aws-credentials v6 and aws-actions/amazon-ecr-login v2.
@@ -757,3 +759,17 @@ The project is shown live rather than with static images. Each result can be rep
 - [ ] Final secret check, then make the repository public
 
 **Next session:** the README and the presentation.
+
+### 10-11-2026: Pipeline debugging
+
+**Goal:** get the CI/CD pipeline from red to green.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Credentials could not be loaded | The AWS_ROLE_ARN variable had never been saved in GitHub | Set the variable and started a fresh run |
+| Not authorized to perform sts:AssumeRoleWithWebIdentity | The role trusted a subject without the numeric IDs that GitHub now sends | Printed the real claims in a debug workflow and updated the trust rule |
+| Scan step failed within seconds | The step asked for results before ECR had started the scan | Polled until the scan status was COMPLETE |
+
+**Lessons:** read the actual error before changing anything. Print the identity claims instead of guessing the trust rule. A failed gate step correctly stopped the image from being published as latest, and left a commit-tagged image behind that the lifecycle policy removes later. Remove temporary debug workflows once the problem is solved.
+
+**Result:** build-scan-push runs green, publishes the three images and skips deploying services that are not running.
