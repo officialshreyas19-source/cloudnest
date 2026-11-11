@@ -266,7 +266,7 @@ Built with Terraform in `terraform/monitoring.tf`. The topic and subscription ar
 
 - Alarms email on both alarm and recovery. Missing data counts as not breaching, so a switched-off system stays quiet.
 - A test alarm was triggered with aws cloudwatch set-alarm-state to prove the email path works.
-- **Failure test:** one menu task was stopped on purpose while requests were sent to the load balancer. ECS started a replacement automatically and the load balancer registered it once healthy. With one container per service there is a short gap, a deliberate cost trade-off. Production would run two or more containers across zones.
+- **Failure test:** one menu task was stopped on purpose while requests were sent to the load balancer. ECS started a replacement automatically and the load balancer registered it once healthy. With one container per service there is a short gap, a deliberate cost trade-off. Production would run two or more containers across zones. Measured in one test (checks every 5 seconds): 3 failed checks, about 15 seconds without a healthy menu container, and full service again within roughly 40 seconds of stopping the task, with no human action.
 - Afterwards enable_paid was set to false, which removed all 20 paid resources, and checks confirmed no load balancer, database, tasks or leftover secret.
 
 ## 7. How to run
@@ -773,3 +773,23 @@ The project is shown live rather than with static images. Each result can be rep
 **Lessons:** read the actual error before changing anything. Print the identity claims instead of guessing the trust rule. A failed gate step correctly stopped the image from being published as latest, and left a commit-tagged image behind that the lifecycle policy removes later. Remove temporary debug workflows once the problem is solved.
 
 **Result:** build-scan-push runs green, publishes the three images and skips deploying services that are not running.
+
+### 11-11-2026: Full system rehearsal
+
+**Goal:** prove the whole system works end to end using the images built by the CI/CD pipeline, then switch everything off.
+
+| Check | Result |
+|---|---|
+| Switch on | enable_paid=true created 20 resources |
+| Services | menu, order and payment running, all three targets healthy behind one load balancer |
+| Menu | /menu returned the four items |
+| Orders | An order was created and listed. The order service read its database password from Secrets Manager and used the encrypted connection to the private database |
+| Payments | 249 approved, 9000 declined |
+| Dashboard | All four graphs showed data: a request spike of 39, no 5xx errors, one healthy container per service, CPU under 2 percent for the services, and a startup spike of about 46 percent on the database |
+| Alarm email | A test alarm reached my email through SNS |
+| Failure test | The menu task was stopped on purpose. 3 failed checks (about 15 seconds), service again within roughly 40 seconds, back to 1 running with no human action |
+| Switch off | enable_paid=false destroyed all 20 resources. No load balancer, database, tasks or secrets remained |
+
+**Notes:** the payment service accepts an order id that does not exist, because it is a simulation that does not call the order service. The recovery numbers come from one test with checks every 5 seconds.
+
+**Lessons:** the services run from pipeline-built images, so the cycle commit, build, scan, publish, deploy works end to end. A single container per service gives a short gap on failure. Two or more containers across zones would remove it.
