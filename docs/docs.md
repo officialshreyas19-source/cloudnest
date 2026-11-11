@@ -471,23 +471,16 @@ terraform apply -var="enable_paid=false"    # stops billing (removes the 20 paid
 | 28-10-2026 | Built the CI/CD pipeline: GitHub Actions builds the three images, pushes them tagged with the commit ID, waits for the ECR scan, blocks Critical findings, publishes latest only after the scan passes and redeploys running services. Logs in to AWS with OIDC and a least-privilege role created with Terraform (3 resources). |
 | 02-11-2026 | Added monitoring: an SNS topic with a confirmed email subscription, a CloudWatch dashboard (requests and 5xx, healthy containers, service CPU, database CPU and connections) and 8 alarms (load balancer 5xx, unhealthy containers per service, CPU per service, database CPU). Sent a test alarm to prove the email arrives. Stopped a service task on purpose to show ECS replacing it. Switched all 20 paid resources off and checked the account was clean. |
 
-## 13. Screenshots (add as evidence)
+## 13. Evidence
 
-Save images in `docs/screenshots/` and link them here.
+The project is shown live rather than with static images. Each result can be reproduced with the commands in section 7:
 
-- [ ] VPC and subnets in the AWS console
-- [ ] `terraform apply` complete
-- [ ] Menu service in the browser (`/menu`)
-- [ ] ECR image details (Artifact type Image, tag latest)
-- [ ] ECR scan summary (0 Critical, 1 High)
-- [ ] ECS cluster page (Active)
-- [ ] ECS task Running
-- [ ] Menu service in the browser from AWS (`/menu` at the task IP)
-- [ ] CloudWatch log stream for the menu container
-- [ ] ECS service running
-- [ ] Pipeline passing
-- [ ] Monitoring dashboard and alert
-- [ ] Failure recovery demo
+- Pipeline runs and scan summaries: the Actions tab of this repository.
+- Image scan results: aws ecr describe-image-scan-findings (see section 9).
+- Infrastructure: terraform plan and apply output.
+- Services: requests to the load balancer address for /menu, /orders and /pay.
+- Monitoring: the CloudWatch dashboard and a test alarm email.
+- Recovery: stopping a service task on purpose and watching ECS replace it.
 
 ## 14. Daily notes
 
