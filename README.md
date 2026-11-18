@@ -101,7 +101,7 @@ The always-on parts (network, registry, cluster, security groups, alert topic) a
 ## Security
 
 - MFA on the root and admin users, and daily work done as an IAM user.
-- Services and database in a private design: the database is not publicly accessible and only the order service can reach it.
+- The database is in private subnets, is not publicly accessible, and only the order service can reach it.
 - Containers accept traffic only from the load balancer.
 - Database storage is encrypted, and the password never appears in code, Git or Terraform files.
 - The pipeline authenticates with OIDC and a role limited to this repository's `main` branch and to the three ECR repositories and one ECS cluster.
